@@ -303,162 +303,154 @@ def run_split(input_path: Path, pieces: int, axis: str,
 # ---------------------------------------------------------------------------
 
 def run_gui() -> int:
+    """Run the splitter via a Tk simpledialog.Dialog form.
+
+    Using simpledialog.Dialog (the same machinery as `askinteger` /
+    `askopenfilename`) sidesteps the macOS dark-mode rendering issues that
+    affect widgets sitting in a regular root Tk window. Widgets are left
+    unstyled so they pick up the OS appearance.
+    """
     import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
+    from tkinter import filedialog, messagebox, simpledialog
+
+    class SplitterDialog(simpledialog.Dialog):
+        def body(self, master):
+            self.input_var = tk.StringVar()
+            self.pieces_var = tk.IntVar(value=4)
+            self.axis_var = tk.StringVar(value="Z")
+            self.pins_var = tk.BooleanVar(value=True)
+            self.pin_dia_var = tk.DoubleVar(value=4.0)
+            self.pin_depth_var = tk.DoubleVar(value=10.0)
+            self.pin_count_var = tk.IntVar(value=2)
+
+            pad = {"padx": 8, "pady": 5}
+            row = 0
+
+            tk.Label(master, text="Input mesh:").grid(
+                row=row, column=0, sticky="w", **pad)
+            tk.Entry(master, textvariable=self.input_var, width=42).grid(
+                row=row, column=1, sticky="we", **pad)
+            tk.Button(master, text="Browse…",
+                      command=self._pick_input).grid(
+                row=row, column=2, **pad)
+
+            row += 1
+            tk.Label(master, text="Number of pieces:").grid(
+                row=row, column=0, sticky="w", **pad)
+            pf = tk.Frame(master)
+            pf.grid(row=row, column=1, columnspan=2, sticky="w", **pad)
+            for v in (2, 3, 4):
+                tk.Radiobutton(pf, text=str(v),
+                               variable=self.pieces_var, value=v).pack(
+                    side="left", padx=8)
+
+            row += 1
+            tk.Label(master, text="Center axis:").grid(
+                row=row, column=0, sticky="w", **pad)
+            af = tk.Frame(master)
+            af.grid(row=row, column=1, columnspan=2, sticky="w", **pad)
+            for v in ("X", "Y", "Z"):
+                tk.Radiobutton(af, text=v,
+                               variable=self.axis_var, value=v).pack(
+                    side="left", padx=8)
+
+            row += 1
+            tk.Checkbutton(master, text="Add alignment pin holes",
+                           variable=self.pins_var).grid(
+                row=row, column=0, columnspan=3, sticky="w", **pad)
+
+            row += 1
+            tk.Label(master, text="Pin diameter (mm):").grid(
+                row=row, column=0, sticky="w", **pad)
+            tk.Entry(master, textvariable=self.pin_dia_var, width=10).grid(
+                row=row, column=1, sticky="w", **pad)
+
+            row += 1
+            tk.Label(master, text="Pin depth each side (mm):").grid(
+                row=row, column=0, sticky="w", **pad)
+            tk.Entry(master, textvariable=self.pin_depth_var, width=10).grid(
+                row=row, column=1, sticky="w", **pad)
+
+            row += 1
+            tk.Label(master, text="Pins per joint:").grid(
+                row=row, column=0, sticky="w", **pad)
+            tk.Entry(master, textvariable=self.pin_count_var, width=10).grid(
+                row=row, column=1, sticky="w", **pad)
+
+            master.columnconfigure(1, weight=1)
+            return None  # focus default
+
+        def _pick_input(self):
+            path = filedialog.askopenfilename(
+                parent=self,
+                title="Select mesh to split",
+                filetypes=[("Mesh files", "*.stl *.obj *.ply *.3mf"),
+                           ("All files", "*.*")])
+            if path:
+                self.input_var.set(path)
+
+        def buttonbox(self):
+            # Replace default OK/Cancel with Split/Cancel.
+            box = tk.Frame(self)
+            tk.Button(box, text="Split", width=10, default=tk.ACTIVE,
+                      command=self.ok).pack(side="left", padx=8, pady=8)
+            tk.Button(box, text="Cancel", width=10,
+                      command=self.cancel).pack(side="left", padx=8, pady=8)
+            self.bind("<Return>", self.ok)
+            self.bind("<Escape>", self.cancel)
+            box.pack()
+
+        def validate(self):
+            if not self.input_var.get().strip():
+                messagebox.showerror("Missing input",
+                                     "Please pick an input mesh.",
+                                     parent=self)
+                return 0
+            return 1
+
+        def apply(self):
+            self.result = {
+                "input_path": Path(self.input_var.get()),
+                "pieces": int(self.pieces_var.get()),
+                "axis": self.axis_var.get(),
+                "pins": bool(self.pins_var.get()),
+                "pin_diameter": float(self.pin_dia_var.get()),
+                "pin_depth": float(self.pin_depth_var.get()),
+                "pin_count": int(self.pin_count_var.get()),
+            }
 
     root = tk.Tk()
-    root.title("FusionSplitter — Radial Wedge Splitter")
-    root.geometry("560x560")
+    root.withdraw()
+    dialog = SplitterDialog(root, title="FusionSplitter — Radial Wedge Splitter")
+    if not getattr(dialog, "result", None):
+        root.destroy()
+        return 0
 
-    # 'clam' is a Tk-bundled theme that renders identically across platforms
-    # and avoids macOS Aqua dark-mode rendering issues (invisible widgets).
-    style = ttk.Style()
+    params = dialog.result
     try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-    BG = "#f2f2f2"
-    style.configure(".", background=BG, foreground="#000000")
-    style.configure("TFrame", background=BG)
-    style.configure("TLabel", background=BG, foreground="#000000")
-    style.configure("TButton", background="#e0e0e0", foreground="#000000")
-    style.configure("TCheckbutton", background=BG, foreground="#000000")
-    style.configure("TRadiobutton", background=BG, foreground="#000000")
-    style.configure("TEntry", fieldbackground="#ffffff", foreground="#000000")
-    style.configure("TSpinbox", fieldbackground="#ffffff", foreground="#000000")
-    style.configure("Big.TButton", font=("Helvetica", 13, "bold"), padding=8)
-    root.configure(bg=BG)
+        written = run_split(
+            input_path=params["input_path"],
+            pieces=params["pieces"],
+            axis=params["axis"],
+            axis_origin=None,
+            axis_direction=None,
+            pins=params["pins"],
+            pin_diameter=params["pin_diameter"],
+            pin_depth=params["pin_depth"],
+            pin_count=params["pin_count"],
+            output_dir=None,
+            prefix=None,
+            fmt=None,
+            log=print,
+        )
+        messagebox.showinfo(
+            "Done",
+            f"Wrote {len(written)} piece(s) to:\n{written[0].parent}",
+            parent=root)
+    except Exception as exc:
+        messagebox.showerror("Split failed", str(exc), parent=root)
 
-    input_var = tk.StringVar()
-    pieces_var = tk.IntVar(value=4)
-    axis_var = tk.StringVar(value="Z")
-    pins_var = tk.BooleanVar(value=True)
-    pin_dia_var = tk.DoubleVar(value=4.0)
-    pin_depth_var = tk.DoubleVar(value=10.0)
-    pin_count_var = tk.IntVar(value=2)
-
-    def pick_input():
-        path = filedialog.askopenfilename(
-            title="Select mesh to split",
-            filetypes=[("Mesh files", "*.stl *.obj *.ply *.3mf"),
-                       ("All files", "*.*")])
-        if path:
-            input_var.set(path)
-
-    frm = ttk.Frame(root, padding=12)
-    frm.grid(row=0, column=0, sticky="nsew")
-    root.columnconfigure(0, weight=1)
-    root.rowconfigure(0, weight=1)
-    frm.columnconfigure(1, weight=1)
-
-    pad = {"padx": 8, "pady": 6}
-    row = 0
-
-    ttk.Label(frm, text="Input mesh:").grid(row=row, column=0, sticky="w", **pad)
-    ttk.Entry(frm, textvariable=input_var).grid(
-        row=row, column=1, sticky="we", **pad)
-    ttk.Button(frm, text="Browse…", command=pick_input).grid(
-        row=row, column=2, **pad)
-
-    row += 1
-    ttk.Separator(frm, orient="horizontal").grid(
-        row=row, column=0, columnspan=3, sticky="we", pady=10)
-
-    row += 1
-    ttk.Label(frm, text="Number of pieces:").grid(row=row, column=0, sticky="w", **pad)
-    pieces_frame = ttk.Frame(frm)
-    pieces_frame.grid(row=row, column=1, columnspan=2, sticky="w", **pad)
-    for val in (2, 3, 4):
-        ttk.Radiobutton(pieces_frame, text=str(val),
-                        variable=pieces_var, value=val).pack(
-            side="left", padx=10)
-
-    row += 1
-    ttk.Label(frm, text="Center axis:").grid(row=row, column=0, sticky="w", **pad)
-    axis_frame = ttk.Frame(frm)
-    axis_frame.grid(row=row, column=1, columnspan=2, sticky="w", **pad)
-    for val in ("X", "Y", "Z"):
-        ttk.Radiobutton(axis_frame, text=val,
-                        variable=axis_var, value=val).pack(
-            side="left", padx=10)
-
-    row += 1
-    ttk.Separator(frm, orient="horizontal").grid(
-        row=row, column=0, columnspan=3, sticky="we", pady=10)
-
-    row += 1
-    ttk.Checkbutton(frm, text="Add alignment pin holes",
-                    variable=pins_var).grid(
-        row=row, column=0, columnspan=3, sticky="w", **pad)
-
-    row += 1
-    ttk.Label(frm, text="Pin diameter (mm):").grid(
-        row=row, column=0, sticky="w", **pad)
-    ttk.Entry(frm, textvariable=pin_dia_var, width=10).grid(
-        row=row, column=1, sticky="w", **pad)
-
-    row += 1
-    ttk.Label(frm, text="Pin depth each side (mm):").grid(
-        row=row, column=0, sticky="w", **pad)
-    ttk.Entry(frm, textvariable=pin_depth_var, width=10).grid(
-        row=row, column=1, sticky="w", **pad)
-
-    row += 1
-    ttk.Label(frm, text="Pins per joint:").grid(
-        row=row, column=0, sticky="w", **pad)
-    ttk.Spinbox(frm, from_=1, to=10, textvariable=pin_count_var,
-                width=8).grid(row=row, column=1, sticky="w", **pad)
-
-    row += 1
-    ttk.Separator(frm, orient="horizontal").grid(
-        row=row, column=0, columnspan=3, sticky="we", pady=10)
-
-    row += 1
-    log_text = tk.Text(frm, height=8, wrap="word",
-                       bg="#ffffff", fg="#000000",
-                       relief="flat", highlightthickness=1,
-                       highlightbackground="#888888")
-    log_text.grid(row=row, column=0, columnspan=3, sticky="we", **pad)
-
-    def log(msg: str):
-        log_text.insert("end", msg + "\n")
-        log_text.see("end")
-        root.update_idletasks()
-
-    def do_split():
-        try:
-            if not input_var.get():
-                messagebox.showerror("Missing input", "Please pick an input mesh.")
-                return
-            input_path = Path(input_var.get())
-            log_text.delete("1.0", "end")
-            written = run_split(
-                input_path=input_path,
-                pieces=pieces_var.get(),
-                axis=axis_var.get(),
-                axis_origin=None,
-                axis_direction=None,
-                pins=pins_var.get(),
-                pin_diameter=pin_dia_var.get(),
-                pin_depth=pin_depth_var.get(),
-                pin_count=pin_count_var.get(),
-                output_dir=None,  # pieces saved next to the input file
-                prefix=None,
-                fmt=None,
-                log=log,
-            )
-            messagebox.showinfo("Done", f"Wrote {len(written)} piece(s) to:\n"
-                                        f"{written[0].parent}")
-        except Exception as exc:
-            log(f"ERROR: {exc}")
-            messagebox.showerror("Split failed", str(exc))
-
-    row += 1
-    ttk.Button(frm, text="Split", style="Big.TButton",
-               command=do_split).grid(
-        row=row, column=0, columnspan=3, pady=14)
-
-    root.mainloop()
+    root.destroy()
     return 0
 
 
