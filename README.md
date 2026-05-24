@@ -58,5 +58,54 @@ mating face. Built for 3D-printing objects that are too big to print whole.
 
 ## Files
 
-- `FusionSplitter.py` — entry point + command handlers + split logic.
+- `FusionSplitter.py` — Fusion add-in entry point + command handlers + split logic.
 - `FusionSplitter.manifest` — Fusion add-in metadata.
+- `splitter.py` — standalone Python CLI (see below).
+- `requirements.txt` — deps for the CLI.
+
+---
+
+# `splitter.py` — standalone CLI
+
+Same functionality as the add-in, but runs outside Fusion: reads a mesh file
+(STL/OBJ/PLY/3MF), splits it into N radial wedges, optionally drills pin
+holes, and writes one file per piece. Useful if you want to split a model
+that's already exported as STL, or to script the process.
+
+## Install
+
+```sh
+pip install -r requirements.txt
+```
+
+Booleans use the `manifold3d` backend via `trimesh`, so input meshes should
+be watertight (a warning is printed otherwise).
+
+## Use
+
+```sh
+# 6 wedges around the mesh's Z axis through centroid, with 2 pin holes per joint
+python splitter.py model.stl -n 6 --pins
+
+# Custom axis (origin + direction) and pin parameters
+python splitter.py model.stl -n 8 \
+    --axis-origin 0,0,0 --axis-direction 0,0,1 \
+    --pins --pin-diameter 5 --pin-depth 12 --pin-count 3 \
+    -o ./pieces
+
+# Output a different format
+python splitter.py model.stl -n 4 --format 3mf -o ./pieces
+```
+
+Run `python splitter.py --help` for all options.
+
+## Notes
+
+- All lengths are in the mesh's native units. STLs from Fusion are
+  millimetres by default, which matches the `--pin-diameter` / `--pin-depth`
+  defaults (4 mm / 10 mm).
+- The axis defaults to **Z through the mesh centroid**. Pass `--axis X` /
+  `--axis Y` for the other principal axes, or `--axis-direction x,y,z` and
+  `--axis-origin x,y,z` for any line in space.
+- If a piece comes out empty (axis grazes the mesh, wedge angle misses
+  geometry, etc.) you'll get a warning and the piece is skipped.
