@@ -6,7 +6,7 @@ an STL/OBJ/PLY/3MF file, splits the geometry into N equal pie-slice wedges
 around a chosen axis, optionally drills matching cylindrical alignment-pin
 holes on every joint, and writes one file per piece.
 
-Dependencies: trimesh, manifold3d, shapely, numpy. Install with:
+Dependencies: trimesh, manifold3d, numpy. Install with:
     pip install -r requirements.txt
 """
 
@@ -20,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
-from shapely.geometry import Polygon
 
 
 # ---------------------------------------------------------------------------
@@ -50,29 +49,53 @@ def align_axis_to_z(origin: np.ndarray, direction: np.ndarray) -> np.ndarray:
     return R @ T
 
 
-def wedge_polygon(theta_a: float, theta_b: float, radius: float,
-                  arc_segments: int = 24) -> Polygon:
-    """Sector polygon from theta_a to theta_b at the given radius.
+def build_wedge_prism(theta_a: float, theta_b: float, radius: float,
+                      z_lo: float, z_hi: float,
+                      arc_segments: int = 24) -> trimesh.Trimesh:
+    """Build a wedge prism (circular sector × axial extent) directly as a
+    triangle mesh.
 
-    Apex is at (0,0); the arc is approximated by straight segments. Because
-    `radius` is chosen to exceed the body's radial extent, the arc never
-    touches the body and the approximation is geometrically irrelevant — but
-    using a sector (rather than a bare triangle) keeps the polygon valid for
-    N = 2, where a triangle would collapse to a line.
+    No external triangulation engine needed — the mesh is assembled by hand
+    from two fan-triangulated end caps and three flat side walls. The arc is
+    approximated by line segments; since `radius` is chosen larger than the
+    body's radial extent, that approximation never touches the body.
     """
     angles = np.linspace(theta_a, theta_b, max(2, arc_segments + 1))
-    pts = [(0.0, 0.0)]
-    pts.extend((radius * math.cos(a), radius * math.sin(a)) for a in angles)
-    return Polygon(pts)
+    n_arc = len(angles)
 
+    arc_b = [(radius * math.cos(a), radius * math.sin(a), z_lo) for a in angles]
+    arc_t = [(radius * math.cos(a), radius * math.sin(a), z_hi) for a in angles]
+    apex_b = (0.0, 0.0, z_lo)
+    apex_t = (0.0, 0.0, z_hi)
 
-def build_wedge_prism(theta_a: float, theta_b: float, radius: float,
-                      z_lo: float, z_hi: float) -> trimesh.Trimesh:
-    """Wedge cutter as a Z-aligned prism extending from z_lo to z_hi."""
-    poly = wedge_polygon(theta_a, theta_b, radius)
-    prism = trimesh.creation.extrude_polygon(poly, height=z_hi - z_lo)
-    prism.apply_translation([0.0, 0.0, z_lo])
-    return prism
+    verts = [apex_b] + arc_b + [apex_t] + arc_t
+    APEX_B = 0
+    APEX_T = n_arc + 1
+
+    def ARC_B(i): return 1 + i
+    def ARC_T(i): return n_arc + 2 + i
+
+    faces: list[list[int]] = []
+    # Bottom cap (normal -Z): fan from apex, wound to face downward.
+    for i in range(n_arc - 1):
+        faces.append([APEX_B, ARC_B(i + 1), ARC_B(i)])
+    # Top cap (normal +Z): fan from apex.
+    for i in range(n_arc - 1):
+        faces.append([APEX_T, ARC_T(i), ARC_T(i + 1)])
+    # Radial wall at theta_a.
+    faces.append([APEX_B, ARC_B(0), ARC_T(0)])
+    faces.append([APEX_B, ARC_T(0), APEX_T])
+    # Radial wall at theta_b.
+    faces.append([APEX_B, APEX_T, ARC_T(n_arc - 1)])
+    faces.append([APEX_B, ARC_T(n_arc - 1), ARC_B(n_arc - 1)])
+    # Curved outer wall.
+    for i in range(n_arc - 1):
+        faces.append([ARC_B(i), ARC_B(i + 1), ARC_T(i + 1)])
+        faces.append([ARC_B(i), ARC_T(i + 1), ARC_T(i)])
+
+    return trimesh.Trimesh(vertices=np.array(verts, dtype=float),
+                           faces=np.array(faces, dtype=np.int64),
+                           process=True)
 
 
 def build_pin_cylinder(center: np.ndarray, axis: np.ndarray,
@@ -281,40 +304,38 @@ def run_split(input_path: Path, pieces: int, axis: str,
 
 def run_gui() -> int:
     import tkinter as tk
-    from tkinter import filedialog, messagebox
-
-    # Use plain tk widgets with explicit colors. ttk widgets render
-    # invisibly on macOS dark mode with some Python/Tk builds, so we avoid
-    # them entirely here.
-    BG = "#f4f4f4"
-    FG = "#000000"
-    ENTRY_BG = "#ffffff"
-    BTN_BG = "#e0e0e0"
+    from tkinter import filedialog, messagebox, ttk
 
     root = tk.Tk()
     root.title("FusionSplitter — Radial Wedge Splitter")
-    root.geometry("640x600")
+    root.geometry("560x560")
+
+    # 'clam' is a Tk-bundled theme that renders identically across platforms
+    # and avoids macOS Aqua dark-mode rendering issues (invisible widgets).
+    style = ttk.Style()
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    BG = "#f2f2f2"
+    style.configure(".", background=BG, foreground="#000000")
+    style.configure("TFrame", background=BG)
+    style.configure("TLabel", background=BG, foreground="#000000")
+    style.configure("TButton", background="#e0e0e0", foreground="#000000")
+    style.configure("TCheckbutton", background=BG, foreground="#000000")
+    style.configure("TRadiobutton", background=BG, foreground="#000000")
+    style.configure("TEntry", fieldbackground="#ffffff", foreground="#000000")
+    style.configure("TSpinbox", fieldbackground="#ffffff", foreground="#000000")
+    style.configure("Big.TButton", font=("Helvetica", 13, "bold"), padding=8)
     root.configure(bg=BG)
 
-    def lbl(parent, text, **kw):
-        return tk.Label(parent, text=text, bg=BG, fg=FG,
-                        anchor="w", **kw)
-
-    def ent(parent, var, **kw):
-        return tk.Entry(parent, textvariable=var, bg=ENTRY_BG, fg=FG,
-                        insertbackground=FG, highlightthickness=1,
-                        highlightbackground="#888888", relief="flat", **kw)
-
-    def btn(parent, text, command, **kw):
-        return tk.Button(parent, text=text, command=command,
-                         bg=BTN_BG, fg=FG, activebackground="#cccccc",
-                         activeforeground=FG, highlightbackground=BG,
-                         relief="raised", **kw)
-
-    pad = {"padx": 8, "pady": 4}
-
     input_var = tk.StringVar()
-    out_var = tk.StringVar()
+    pieces_var = tk.IntVar(value=4)
+    axis_var = tk.StringVar(value="Z")
+    pins_var = tk.BooleanVar(value=True)
+    pin_dia_var = tk.DoubleVar(value=4.0)
+    pin_depth_var = tk.DoubleVar(value=10.0)
+    pin_count_var = tk.IntVar(value=2)
 
     def pick_input():
         path = filedialog.askopenfilename(
@@ -323,89 +344,78 @@ def run_gui() -> int:
                        ("All files", "*.*")])
         if path:
             input_var.set(path)
-            if not out_var.get():
-                out_var.set(str(Path(path).parent))
 
-    def pick_output():
-        path = filedialog.askdirectory(title="Select output directory")
-        if path:
-            out_var.set(path)
+    frm = ttk.Frame(root, padding=12)
+    frm.grid(row=0, column=0, sticky="nsew")
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+    frm.columnconfigure(1, weight=1)
 
+    pad = {"padx": 8, "pady": 6}
     row = 0
-    lbl(root, "Input mesh:").grid(row=row, column=0, sticky="w", **pad)
-    ent(root, input_var, width=50).grid(row=row, column=1, sticky="we", **pad)
-    btn(root, "Browse…", pick_input).grid(row=row, column=2, **pad)
+
+    ttk.Label(frm, text="Input mesh:").grid(row=row, column=0, sticky="w", **pad)
+    ttk.Entry(frm, textvariable=input_var).grid(
+        row=row, column=1, sticky="we", **pad)
+    ttk.Button(frm, text="Browse…", command=pick_input).grid(
+        row=row, column=2, **pad)
 
     row += 1
-    lbl(root, "Output dir:").grid(row=row, column=0, sticky="w", **pad)
-    ent(root, out_var, width=50).grid(row=row, column=1, sticky="we", **pad)
-    btn(root, "Browse…", pick_output).grid(row=row, column=2, **pad)
+    ttk.Separator(frm, orient="horizontal").grid(
+        row=row, column=0, columnspan=3, sticky="we", pady=10)
 
     row += 1
-    tk.Frame(root, bg="#cccccc", height=1).grid(
-        row=row, column=0, columnspan=3, sticky="we", padx=8, pady=8)
-
-    pieces_var = tk.IntVar(value=4)
-    axis_var = tk.StringVar(value="Z")
-
-    row += 1
-    lbl(root, "Number of pieces (>=2):").grid(row=row, column=0, sticky="w", **pad)
-    tk.Spinbox(root, from_=2, to=64, textvariable=pieces_var, width=8,
-               bg=ENTRY_BG, fg=FG, buttonbackground=BTN_BG,
-               highlightthickness=1, highlightbackground="#888888",
-               relief="flat").grid(row=row, column=1, sticky="w", **pad)
+    ttk.Label(frm, text="Number of pieces:").grid(row=row, column=0, sticky="w", **pad)
+    pieces_frame = ttk.Frame(frm)
+    pieces_frame.grid(row=row, column=1, columnspan=2, sticky="w", **pad)
+    for val in (2, 3, 4):
+        ttk.Radiobutton(pieces_frame, text=str(val),
+                        variable=pieces_var, value=val).pack(
+            side="left", padx=10)
 
     row += 1
-    lbl(root, "Center axis:").grid(row=row, column=0, sticky="w", **pad)
-    axis_frame = tk.Frame(root, bg=BG)
-    axis_frame.grid(row=row, column=1, sticky="w", **pad)
-    for opt in ("X", "Y", "Z"):
-        tk.Radiobutton(axis_frame, text=opt, variable=axis_var, value=opt,
-                       bg=BG, fg=FG, selectcolor=ENTRY_BG,
-                       activebackground=BG, activeforeground=FG).pack(
-            side="left", padx=4)
-    lbl(root, "(through mesh centroid)").grid(
-        row=row, column=2, sticky="w", **pad)
+    ttk.Label(frm, text="Center axis:").grid(row=row, column=0, sticky="w", **pad)
+    axis_frame = ttk.Frame(frm)
+    axis_frame.grid(row=row, column=1, columnspan=2, sticky="w", **pad)
+    for val in ("X", "Y", "Z"):
+        ttk.Radiobutton(axis_frame, text=val,
+                        variable=axis_var, value=val).pack(
+            side="left", padx=10)
 
     row += 1
-    tk.Frame(root, bg="#cccccc", height=1).grid(
-        row=row, column=0, columnspan=3, sticky="we", padx=8, pady=8)
-
-    pins_var = tk.BooleanVar(value=True)
-    pin_dia_var = tk.DoubleVar(value=4.0)
-    pin_depth_var = tk.DoubleVar(value=10.0)
-    pin_count_var = tk.IntVar(value=2)
+    ttk.Separator(frm, orient="horizontal").grid(
+        row=row, column=0, columnspan=3, sticky="we", pady=10)
 
     row += 1
-    tk.Checkbutton(root, text="Add alignment pin holes",
-                   variable=pins_var, bg=BG, fg=FG,
-                   selectcolor=ENTRY_BG, activebackground=BG,
-                   activeforeground=FG).grid(
-        row=row, column=0, columnspan=2, sticky="w", **pad)
+    ttk.Checkbutton(frm, text="Add alignment pin holes",
+                    variable=pins_var).grid(
+        row=row, column=0, columnspan=3, sticky="w", **pad)
 
     row += 1
-    lbl(root, "Pin diameter (mm):").grid(row=row, column=0, sticky="w", **pad)
-    ent(root, pin_dia_var, width=10).grid(row=row, column=1, sticky="w", **pad)
-
-    row += 1
-    lbl(root, "Pin depth each side (mm):").grid(
+    ttk.Label(frm, text="Pin diameter (mm):").grid(
         row=row, column=0, sticky="w", **pad)
-    ent(root, pin_depth_var, width=10).grid(row=row, column=1, sticky="w", **pad)
+    ttk.Entry(frm, textvariable=pin_dia_var, width=10).grid(
+        row=row, column=1, sticky="w", **pad)
 
     row += 1
-    lbl(root, "Pins per joint:").grid(row=row, column=0, sticky="w", **pad)
-    tk.Spinbox(root, from_=1, to=10, textvariable=pin_count_var, width=8,
-               bg=ENTRY_BG, fg=FG, buttonbackground=BTN_BG,
-               highlightthickness=1, highlightbackground="#888888",
-               relief="flat").grid(row=row, column=1, sticky="w", **pad)
+    ttk.Label(frm, text="Pin depth each side (mm):").grid(
+        row=row, column=0, sticky="w", **pad)
+    ttk.Entry(frm, textvariable=pin_depth_var, width=10).grid(
+        row=row, column=1, sticky="w", **pad)
 
     row += 1
-    tk.Frame(root, bg="#cccccc", height=1).grid(
-        row=row, column=0, columnspan=3, sticky="we", padx=8, pady=8)
+    ttk.Label(frm, text="Pins per joint:").grid(
+        row=row, column=0, sticky="w", **pad)
+    ttk.Spinbox(frm, from_=1, to=10, textvariable=pin_count_var,
+                width=8).grid(row=row, column=1, sticky="w", **pad)
 
     row += 1
-    log_text = tk.Text(root, height=10, width=72, wrap="word",
-                       bg=ENTRY_BG, fg=FG, insertbackground=FG,
+    ttk.Separator(frm, orient="horizontal").grid(
+        row=row, column=0, columnspan=3, sticky="we", pady=10)
+
+    row += 1
+    log_text = tk.Text(frm, height=8, wrap="word",
+                       bg="#ffffff", fg="#000000",
                        relief="flat", highlightthickness=1,
                        highlightbackground="#888888")
     log_text.grid(row=row, column=0, columnspan=3, sticky="we", **pad)
@@ -421,7 +431,6 @@ def run_gui() -> int:
                 messagebox.showerror("Missing input", "Please pick an input mesh.")
                 return
             input_path = Path(input_var.get())
-            out_dir = Path(out_var.get()) if out_var.get() else None
             log_text.delete("1.0", "end")
             written = run_split(
                 input_path=input_path,
@@ -433,7 +442,7 @@ def run_gui() -> int:
                 pin_diameter=pin_dia_var.get(),
                 pin_depth=pin_depth_var.get(),
                 pin_count=pin_count_var.get(),
-                output_dir=out_dir,
+                output_dir=None,  # pieces saved next to the input file
                 prefix=None,
                 fmt=None,
                 log=log,
@@ -445,10 +454,10 @@ def run_gui() -> int:
             messagebox.showerror("Split failed", str(exc))
 
     row += 1
-    btn(root, "Split", do_split, font=("Helvetica", 14, "bold"),
-        padx=20, pady=8).grid(row=row, column=0, columnspan=3, pady=14)
+    ttk.Button(frm, text="Split", style="Big.TButton",
+               command=do_split).grid(
+        row=row, column=0, columnspan=3, pady=14)
 
-    root.columnconfigure(1, weight=1)
     root.mainloop()
     return 0
 
