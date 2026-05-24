@@ -22,6 +22,57 @@ import numpy as np
 import trimesh
 
 
+def _check_dependencies() -> str | None:
+    """Verify the optional trimesh deps needed for slicing+capping are
+    importable from THIS Python interpreter. Returns None if all good, or a
+    user-facing message (with the exact pip command) describing what's
+    missing."""
+    missing = []
+    try:
+        import scipy  # noqa: F401
+    except ImportError:
+        missing.append("scipy")
+    try:
+        import shapely  # noqa: F401
+    except ImportError:
+        missing.append("shapely")
+    try:
+        import networkx  # noqa: F401
+    except ImportError:
+        missing.append("networkx")
+    has_tri = False
+    try:
+        import mapbox_earcut  # noqa: F401
+        has_tri = True
+    except ImportError:
+        pass
+    if not has_tri:
+        try:
+            import triangle  # noqa: F401
+            has_tri = True
+        except ImportError:
+            pass
+    if not has_tri:
+        missing.append("mapbox-earcut")
+    try:
+        import manifold3d  # noqa: F401
+    except ImportError:
+        missing.append("manifold3d")
+
+    if not missing:
+        return None
+
+    return (
+        "Missing Python packages: " + ", ".join(missing) + "\n\n"
+        "These need to be installed into the same Python that's running "
+        "this script. Open PyCharm's Terminal (bottom of the window — make "
+        "sure your venv is active; the prompt should start with '(venv)') "
+        "and run:\n\n"
+        f"    {sys.executable} -m pip install " + " ".join(missing) + "\n\n"
+        "Then restart the script."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Geometry helpers
 # ---------------------------------------------------------------------------
@@ -320,6 +371,14 @@ def run_gui() -> int:
     import tkinter as tk
     from tkinter import filedialog, messagebox, simpledialog
 
+    dep_msg = _check_dependencies()
+    if dep_msg:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Missing dependencies", dep_msg, parent=root)
+        root.destroy()
+        return 1
+
     class SplitterDialog(simpledialog.Dialog):
         def body(self, master):
             self.input_var = tk.StringVar()
@@ -455,7 +514,15 @@ def run_gui() -> int:
             f"Wrote {len(written)} piece(s) to:\n{written[0].parent}",
             parent=root)
     except Exception as exc:
-        messagebox.showerror("Split failed", str(exc), parent=root)
+        msg = str(exc)
+        if "triangulation engine" in msg.lower():
+            msg = (
+                "Polygon triangulation engine missing.\n\n"
+                "Run this in PyCharm's Terminal (with your venv active):\n\n"
+                f"    {sys.executable} -m pip install mapbox-earcut\n\n"
+                "Then restart the script."
+            )
+        messagebox.showerror("Split failed", msg, parent=root)
 
     root.destroy()
     return 0
@@ -501,6 +568,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="Output file extension, e.g. 'stl', '3mf' "
                         "(default: same as input).")
     args = p.parse_args(argv)
+
+    dep_msg = _check_dependencies()
+    if dep_msg:
+        print(dep_msg, file=sys.stderr)
+        return 1
 
     try:
         run_split(
