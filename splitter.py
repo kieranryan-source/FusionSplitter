@@ -49,53 +49,12 @@ def align_axis_to_z(origin: np.ndarray, direction: np.ndarray) -> np.ndarray:
     return R @ T
 
 
-def build_wedge_prism(theta_a: float, theta_b: float, radius: float,
-                      z_lo: float, z_hi: float,
-                      arc_segments: int = 24) -> trimesh.Trimesh:
-    """Build a wedge prism (circular sector × axial extent) directly as a
-    triangle mesh.
-
-    No external triangulation engine needed — the mesh is assembled by hand
-    from two fan-triangulated end caps and three flat side walls. The arc is
-    approximated by line segments; since `radius` is chosen larger than the
-    body's radial extent, that approximation never touches the body.
-    """
-    angles = np.linspace(theta_a, theta_b, max(2, arc_segments + 1))
-    n_arc = len(angles)
-
-    arc_b = [(radius * math.cos(a), radius * math.sin(a), z_lo) for a in angles]
-    arc_t = [(radius * math.cos(a), radius * math.sin(a), z_hi) for a in angles]
-    apex_b = (0.0, 0.0, z_lo)
-    apex_t = (0.0, 0.0, z_hi)
-
-    verts = [apex_b] + arc_b + [apex_t] + arc_t
-    APEX_B = 0
-    APEX_T = n_arc + 1
-
-    def ARC_B(i): return 1 + i
-    def ARC_T(i): return n_arc + 2 + i
-
-    faces: list[list[int]] = []
-    # Bottom cap (normal -Z): fan from apex, wound to face downward.
-    for i in range(n_arc - 1):
-        faces.append([APEX_B, ARC_B(i + 1), ARC_B(i)])
-    # Top cap (normal +Z): fan from apex.
-    for i in range(n_arc - 1):
-        faces.append([APEX_T, ARC_T(i), ARC_T(i + 1)])
-    # Radial wall at theta_a.
-    faces.append([APEX_B, ARC_B(0), ARC_T(0)])
-    faces.append([APEX_B, ARC_T(0), APEX_T])
-    # Radial wall at theta_b.
-    faces.append([APEX_B, APEX_T, ARC_T(n_arc - 1)])
-    faces.append([APEX_B, ARC_T(n_arc - 1), ARC_B(n_arc - 1)])
-    # Curved outer wall.
-    for i in range(n_arc - 1):
-        faces.append([ARC_B(i), ARC_B(i + 1), ARC_T(i + 1)])
-        faces.append([ARC_B(i), ARC_T(i + 1), ARC_T(i)])
-
-    return trimesh.Trimesh(vertices=np.array(verts, dtype=float),
-                           faces=np.array(faces, dtype=np.int64),
-                           process=True)
+def _inward_normal(theta: float, sense: int) -> np.ndarray:
+    """Unit normal of the cutting plane at angle `theta`, pointing INTO the
+    wedge. `sense` is +1 for the lower-angle boundary, -1 for the upper."""
+    if sense > 0:
+        return np.array([-math.sin(theta), math.cos(theta), 0.0])
+    return np.array([math.sin(theta), -math.cos(theta), 0.0])
 
 
 def build_pin_cylinder(center: np.ndarray, axis: np.ndarray,
@@ -124,11 +83,14 @@ def split_radial(mesh: trimesh.Trimesh,
                  axis_direction: np.ndarray,
                  pin_diameter: float = 0.0,
                  pin_depth: float = 0.0,
-                 pin_count: int = 0) -> list[trimesh.Trimesh]:
+                 pin_count: int = 0,
+                 log=print) -> list[trimesh.Trimesh]:
     """Split `mesh` into N radial wedge pieces around the given axis.
 
-    All lengths are in the mesh's native units (typically millimetres for
-    STL). Returns the list of piece meshes, in original world coordinates.
+    Uses `Trimesh.slice_plane` (pure numpy, no manifold3d) so it works on
+    meshes that aren't perfectly clean closed volumes. Pin holes are a
+    best-effort boolean subtract — if that fails, the pieces are still
+    returned without holes.
     """
     if n < 2:
         raise ValueError("n must be >= 2")
@@ -140,67 +102,64 @@ def split_radial(mesh: trimesh.Trimesh,
     local.apply_transform(T)
 
     bb_min, bb_max = local.bounds
-    # Max radial distance in XY of any bounding-box corner
     xy_corners = np.array([[bb_min[0], bb_min[1]],
                            [bb_max[0], bb_min[1]],
                            [bb_min[0], bb_max[1]],
                            [bb_max[0], bb_max[1]]])
     max_r = float(np.max(np.linalg.norm(xy_corners, axis=1)))
-    big_r = max_r * 2.5 + 1.0
+    z_lo, z_hi = float(bb_min[2]), float(bb_max[2])
 
-    z_lo_raw, z_hi_raw = float(bb_min[2]), float(bb_max[2])
-    margin = max(0.5, (z_hi_raw - z_lo_raw) * 0.05)
-    z_lo, z_hi = z_lo_raw - margin, z_hi_raw + margin
-
+    origin_zero = np.zeros(3)
     pieces: list[trimesh.Trimesh] = []
     for i in range(n):
         theta_a = 2.0 * math.pi * i / n
         theta_b = 2.0 * math.pi * (i + 1) / n
-        cutter = build_wedge_prism(theta_a, theta_b, big_r, z_lo, z_hi)
-        try:
-            piece = local.intersection(cutter)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Boolean intersect failed for wedge {i + 1} ({exc}). "
-                "The input mesh is probably not a clean closed volume — "
-                "open it in MeshLab or Blender, fill holes / remove "
-                "non-manifold edges, re-export as STL, and try again."
-            ) from exc
-        if piece.is_empty or len(piece.vertices) == 0:
-            print(f"  wedge {i + 1}: empty (skipped)", file=sys.stderr)
+
+        piece = local.slice_plane(
+            plane_origin=origin_zero,
+            plane_normal=_inward_normal(theta_a, +1),
+            cap=True)
+        if n > 2 and piece is not None and len(piece.vertices) > 0:
+            piece = piece.slice_plane(
+                plane_origin=origin_zero,
+                plane_normal=_inward_normal(theta_b, -1),
+                cap=True)
+
+        if piece is None or len(piece.vertices) == 0:
+            log(f"  wedge {i + 1}: empty (skipped)")
             continue
         pieces.append(piece)
 
-    # Pin holes ---------------------------------------------------------------
-    if pin_diameter > 0 and pin_depth > 0 and pin_count > 0:
-        cylinders: list[trimesh.Trimesh] = []
-        for j in range(n):
-            theta = 2.0 * math.pi * (j + 1) / n  # boundary between j and j+1
-            radial = np.array([math.cos(theta), math.sin(theta), 0.0])
-            # cylinder axis is perpendicular to the cutting plane (which is
-            # spanned by Z and `radial`), so it lies in XY perpendicular to
-            # `radial`.
-            cyl_axis = np.array([-math.sin(theta), math.cos(theta), 0.0])
-            for k in range(pin_count):
-                t = (k + 1) / (pin_count + 1)
-                z = z_lo + (z_hi - z_lo) * t
-                center = radial * (max_r * 0.5) + np.array([0.0, 0.0, z])
-                cylinders.append(build_pin_cylinder(
-                    center, cyl_axis,
-                    radius=pin_diameter / 2.0,
-                    length=2.0 * pin_depth))
+    # Pin holes -- best-effort. Skipped silently if the boolean engine
+    # rejects the geometry (which is common for imperfect input meshes).
+    if pin_diameter > 0 and pin_depth > 0 and pin_count > 0 and pieces:
+        try:
+            cylinders: list[trimesh.Trimesh] = []
+            for j in range(n):
+                theta = 2.0 * math.pi * (j + 1) / n
+                radial = np.array([math.cos(theta), math.sin(theta), 0.0])
+                cyl_axis = np.array([-math.sin(theta), math.cos(theta), 0.0])
+                for k in range(pin_count):
+                    t = (k + 1) / (pin_count + 1)
+                    z = z_lo + (z_hi - z_lo) * t
+                    center = radial * (max_r * 0.5) + np.array([0.0, 0.0, z])
+                    cylinders.append(build_pin_cylinder(
+                        center, cyl_axis,
+                        radius=pin_diameter / 2.0,
+                        length=2.0 * pin_depth))
 
-        if cylinders:
             all_pins = trimesh.util.concatenate(cylinders)
             holed: list[trimesh.Trimesh] = []
             for piece in pieces:
                 drilled = piece.difference(all_pins)
-                if drilled.is_empty or len(drilled.vertices) == 0:
-                    # fall back to the un-drilled piece if subtract failed
+                if drilled is None or drilled.is_empty or len(drilled.vertices) == 0:
                     holed.append(piece)
                 else:
                     holed.append(drilled)
             pieces = holed
+        except Exception as exc:
+            log(f"warning: pin holes skipped (boolean engine rejected the "
+                f"geometry: {exc}). Split pieces saved without holes.")
 
     for piece in pieces:
         piece.apply_transform(T_inv)
@@ -280,16 +239,13 @@ def _ensure_volume(mesh: trimesh.Trimesh, log=print) -> trimesh.Trimesh:
 
     if m.is_volume:
         log("auto-repair succeeded.")
-        return m
-
-    raise RuntimeError(
-        "Input mesh is not a closed volume and auto-repair could not fix it "
-        f"(watertight={m.is_watertight}, "
-        f"winding_consistent={m.is_winding_consistent}). "
-        "Open the STL in MeshLab (Filters → Cleaning and Repairing → Close "
-        "Holes / Remove Non-Manifold Edges) or Blender (Edit Mode → Mesh → "
-        "Clean Up → Fill Holes & Merge By Distance), re-export, and try "
-        "again.")
+    else:
+        log(f"warning: auto-repair could not fully fix the mesh "
+            f"(watertight={m.is_watertight}, "
+            f"winding_consistent={m.is_winding_consistent}). "
+            f"Splitting will continue with plane-slice cuts; the output "
+            f"pieces may inherit any open boundaries from the input.")
+    return m
 
 
 def run_split(input_path: Path, pieces: int, axis: str,

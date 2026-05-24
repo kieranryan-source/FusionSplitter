@@ -78,8 +78,11 @@ that's already exported as STL, or to script the process.
 pip install -r requirements.txt
 ```
 
-Booleans use the `manifold3d` backend via `trimesh`, so input meshes should
-be watertight (a warning is printed otherwise).
+The splits themselves use `trimesh.slice_plane` (pure-numpy plane slicing),
+which is permissive about input quality — non-watertight meshes are
+auto-repaired where possible. Pin holes use the `manifold3d` boolean
+backend; if it rejects the geometry, the pieces are still written without
+holes and a warning is printed.
 
 ## Use
 
