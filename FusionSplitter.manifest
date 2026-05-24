@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "fusion-splitter-radial",
+    "author": "kieranryan",
+    "description": {
+        "": "Split a solid body into N equal radial wedges around an axis, with optional alignment pin holes."
+    },
+    "version": "0.1.0",
+    "runOnStartup": false,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}
