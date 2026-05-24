@@ -281,15 +281,38 @@ def run_split(input_path: Path, pieces: int, axis: str,
 
 def run_gui() -> int:
     import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
+    from tkinter import filedialog, messagebox
+
+    # Use plain tk widgets with explicit colors. ttk widgets render
+    # invisibly on macOS dark mode with some Python/Tk builds, so we avoid
+    # them entirely here.
+    BG = "#f4f4f4"
+    FG = "#000000"
+    ENTRY_BG = "#ffffff"
+    BTN_BG = "#e0e0e0"
 
     root = tk.Tk()
     root.title("FusionSplitter — Radial Wedge Splitter")
-    root.geometry("560x520")
+    root.geometry("640x600")
+    root.configure(bg=BG)
+
+    def lbl(parent, text, **kw):
+        return tk.Label(parent, text=text, bg=BG, fg=FG,
+                        anchor="w", **kw)
+
+    def ent(parent, var, **kw):
+        return tk.Entry(parent, textvariable=var, bg=ENTRY_BG, fg=FG,
+                        insertbackground=FG, highlightthickness=1,
+                        highlightbackground="#888888", relief="flat", **kw)
+
+    def btn(parent, text, command, **kw):
+        return tk.Button(parent, text=text, command=command,
+                         bg=BTN_BG, fg=FG, activebackground="#cccccc",
+                         activeforeground=FG, highlightbackground=BG,
+                         relief="raised", **kw)
 
     pad = {"padx": 8, "pady": 4}
 
-    # --- Input file --------------------------------------------------------
     input_var = tk.StringVar()
     out_var = tk.StringVar()
 
@@ -309,45 +332,44 @@ def run_gui() -> int:
             out_var.set(path)
 
     row = 0
-    ttk.Label(root, text="Input mesh:").grid(row=row, column=0, sticky="w", **pad)
-    ttk.Entry(root, textvariable=input_var, width=50).grid(
-        row=row, column=1, sticky="we", **pad)
-    ttk.Button(root, text="Browse…", command=pick_input).grid(
-        row=row, column=2, **pad)
+    lbl(root, "Input mesh:").grid(row=row, column=0, sticky="w", **pad)
+    ent(root, input_var, width=50).grid(row=row, column=1, sticky="we", **pad)
+    btn(root, "Browse…", pick_input).grid(row=row, column=2, **pad)
 
     row += 1
-    ttk.Label(root, text="Output dir:").grid(row=row, column=0, sticky="w", **pad)
-    ttk.Entry(root, textvariable=out_var, width=50).grid(
-        row=row, column=1, sticky="we", **pad)
-    ttk.Button(root, text="Browse…", command=pick_output).grid(
-        row=row, column=2, **pad)
+    lbl(root, "Output dir:").grid(row=row, column=0, sticky="w", **pad)
+    ent(root, out_var, width=50).grid(row=row, column=1, sticky="we", **pad)
+    btn(root, "Browse…", pick_output).grid(row=row, column=2, **pad)
 
-    # --- Core params -------------------------------------------------------
     row += 1
-    ttk.Separator(root, orient="horizontal").grid(
-        row=row, column=0, columnspan=3, sticky="we", pady=8)
+    tk.Frame(root, bg="#cccccc", height=1).grid(
+        row=row, column=0, columnspan=3, sticky="we", padx=8, pady=8)
 
     pieces_var = tk.IntVar(value=4)
     axis_var = tk.StringVar(value="Z")
 
     row += 1
-    ttk.Label(root, text="Number of pieces:").grid(
-        row=row, column=0, sticky="w", **pad)
-    ttk.Spinbox(root, from_=2, to=64, textvariable=pieces_var, width=8).grid(
-        row=row, column=1, sticky="w", **pad)
+    lbl(root, "Number of pieces (>=2):").grid(row=row, column=0, sticky="w", **pad)
+    tk.Spinbox(root, from_=2, to=64, textvariable=pieces_var, width=8,
+               bg=ENTRY_BG, fg=FG, buttonbackground=BTN_BG,
+               highlightthickness=1, highlightbackground="#888888",
+               relief="flat").grid(row=row, column=1, sticky="w", **pad)
 
     row += 1
-    ttk.Label(root, text="Center axis:").grid(row=row, column=0, sticky="w", **pad)
-    ttk.Combobox(root, values=["X", "Y", "Z"], textvariable=axis_var,
-                 width=6, state="readonly").grid(
-        row=row, column=1, sticky="w", **pad)
-    ttk.Label(root, text="(through mesh centroid)").grid(
+    lbl(root, "Center axis:").grid(row=row, column=0, sticky="w", **pad)
+    axis_frame = tk.Frame(root, bg=BG)
+    axis_frame.grid(row=row, column=1, sticky="w", **pad)
+    for opt in ("X", "Y", "Z"):
+        tk.Radiobutton(axis_frame, text=opt, variable=axis_var, value=opt,
+                       bg=BG, fg=FG, selectcolor=ENTRY_BG,
+                       activebackground=BG, activeforeground=FG).pack(
+            side="left", padx=4)
+    lbl(root, "(through mesh centroid)").grid(
         row=row, column=2, sticky="w", **pad)
 
-    # --- Pin holes ---------------------------------------------------------
     row += 1
-    ttk.Separator(root, orient="horizontal").grid(
-        row=row, column=0, columnspan=3, sticky="we", pady=8)
+    tk.Frame(root, bg="#cccccc", height=1).grid(
+        row=row, column=0, columnspan=3, sticky="we", padx=8, pady=8)
 
     pins_var = tk.BooleanVar(value=True)
     pin_dia_var = tk.DoubleVar(value=4.0)
@@ -355,35 +377,37 @@ def run_gui() -> int:
     pin_count_var = tk.IntVar(value=2)
 
     row += 1
-    ttk.Checkbutton(root, text="Add alignment pin holes",
-                    variable=pins_var).grid(
+    tk.Checkbutton(root, text="Add alignment pin holes",
+                   variable=pins_var, bg=BG, fg=FG,
+                   selectcolor=ENTRY_BG, activebackground=BG,
+                   activeforeground=FG).grid(
         row=row, column=0, columnspan=2, sticky="w", **pad)
 
     row += 1
-    ttk.Label(root, text="Pin diameter (mm):").grid(
+    lbl(root, "Pin diameter (mm):").grid(row=row, column=0, sticky="w", **pad)
+    ent(root, pin_dia_var, width=10).grid(row=row, column=1, sticky="w", **pad)
+
+    row += 1
+    lbl(root, "Pin depth each side (mm):").grid(
         row=row, column=0, sticky="w", **pad)
-    ttk.Entry(root, textvariable=pin_dia_var, width=10).grid(
-        row=row, column=1, sticky="w", **pad)
+    ent(root, pin_depth_var, width=10).grid(row=row, column=1, sticky="w", **pad)
 
     row += 1
-    ttk.Label(root, text="Pin depth each side (mm):").grid(
-        row=row, column=0, sticky="w", **pad)
-    ttk.Entry(root, textvariable=pin_depth_var, width=10).grid(
-        row=row, column=1, sticky="w", **pad)
+    lbl(root, "Pins per joint:").grid(row=row, column=0, sticky="w", **pad)
+    tk.Spinbox(root, from_=1, to=10, textvariable=pin_count_var, width=8,
+               bg=ENTRY_BG, fg=FG, buttonbackground=BTN_BG,
+               highlightthickness=1, highlightbackground="#888888",
+               relief="flat").grid(row=row, column=1, sticky="w", **pad)
 
     row += 1
-    ttk.Label(root, text="Pins per joint:").grid(
-        row=row, column=0, sticky="w", **pad)
-    ttk.Spinbox(root, from_=1, to=10, textvariable=pin_count_var, width=8).grid(
-        row=row, column=1, sticky="w", **pad)
-
-    # --- Log + Split button -----------------------------------------------
-    row += 1
-    ttk.Separator(root, orient="horizontal").grid(
-        row=row, column=0, columnspan=3, sticky="we", pady=8)
+    tk.Frame(root, bg="#cccccc", height=1).grid(
+        row=row, column=0, columnspan=3, sticky="we", padx=8, pady=8)
 
     row += 1
-    log_text = tk.Text(root, height=8, width=64, wrap="word")
+    log_text = tk.Text(root, height=10, width=72, wrap="word",
+                       bg=ENTRY_BG, fg=FG, insertbackground=FG,
+                       relief="flat", highlightthickness=1,
+                       highlightbackground="#888888")
     log_text.grid(row=row, column=0, columnspan=3, sticky="we", **pad)
 
     def log(msg: str):
@@ -393,10 +417,10 @@ def run_gui() -> int:
 
     def do_split():
         try:
-            input_path = Path(input_var.get())
             if not input_var.get():
                 messagebox.showerror("Missing input", "Please pick an input mesh.")
                 return
+            input_path = Path(input_var.get())
             out_dir = Path(out_var.get()) if out_var.get() else None
             log_text.delete("1.0", "end")
             written = run_split(
@@ -421,8 +445,8 @@ def run_gui() -> int:
             messagebox.showerror("Split failed", str(exc))
 
     row += 1
-    ttk.Button(root, text="Split", command=do_split).grid(
-        row=row, column=0, columnspan=3, pady=12)
+    btn(root, "Split", do_split, font=("Helvetica", 14, "bold"),
+        padx=20, pady=8).grid(row=row, column=0, columnspan=3, pady=14)
 
     root.columnconfigure(1, weight=1)
     root.mainloop()
