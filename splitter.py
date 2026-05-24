@@ -157,7 +157,15 @@ def split_radial(mesh: trimesh.Trimesh,
         theta_a = 2.0 * math.pi * i / n
         theta_b = 2.0 * math.pi * (i + 1) / n
         cutter = build_wedge_prism(theta_a, theta_b, big_r, z_lo, z_hi)
-        piece = local.intersection(cutter)
+        try:
+            piece = local.intersection(cutter)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Boolean intersect failed for wedge {i + 1} ({exc}). "
+                "The input mesh is probably not a clean closed volume — "
+                "open it in MeshLab or Blender, fill holes / remove "
+                "non-manifold edges, re-export as STL, and try again."
+            ) from exc
         if piece.is_empty or len(piece.vertices) == 0:
             print(f"  wedge {i + 1}: empty (skipped)", file=sys.stderr)
             continue
@@ -239,6 +247,51 @@ def resolve_axis(mesh: trimesh.Trimesh,
     return origin, direction
 
 
+def _ensure_volume(mesh: trimesh.Trimesh, log=print) -> trimesh.Trimesh:
+    """Attempt to make `mesh` a closed, consistently-wound volume so the
+    manifold3d boolean engine will accept it. Returns the (possibly repaired)
+    mesh; raises a helpful error if repair can't produce a volume."""
+    if mesh.is_volume:
+        return mesh
+
+    log(f"input mesh is not a closed volume "
+        f"(watertight={mesh.is_watertight}, "
+        f"winding_consistent={mesh.is_winding_consistent}); "
+        f"attempting auto-repair…")
+
+    m = mesh.copy()
+    # Cheap structural cleanups
+    m.merge_vertices()
+    try:
+        m.update_faces(m.nondegenerate_faces())
+        m.update_faces(m.unique_faces())
+    except Exception:
+        pass
+    m.remove_unreferenced_vertices()
+    # Trimesh repair helpers (all in-place, all best-effort)
+    for fn_name in ("fill_holes", "fix_winding", "fix_inversion", "fix_normals"):
+        fn = getattr(trimesh.repair, fn_name, None)
+        if fn is None:
+            continue
+        try:
+            fn(m)
+        except Exception:
+            pass
+
+    if m.is_volume:
+        log("auto-repair succeeded.")
+        return m
+
+    raise RuntimeError(
+        "Input mesh is not a closed volume and auto-repair could not fix it "
+        f"(watertight={m.is_watertight}, "
+        f"winding_consistent={m.is_winding_consistent}). "
+        "Open the STL in MeshLab (Filters → Cleaning and Repairing → Close "
+        "Holes / Remove Non-Manifold Edges) or Blender (Edit Mode → Mesh → "
+        "Clean Up → Fill Holes & Merge By Distance), re-export, and try "
+        "again.")
+
+
 def run_split(input_path: Path, pieces: int, axis: str,
               axis_origin: np.ndarray | None,
               axis_direction: np.ndarray | None,
@@ -259,9 +312,7 @@ def run_split(input_path: Path, pieces: int, axis: str,
     if not isinstance(mesh, trimesh.Trimesh):
         raise TypeError(
             f"input did not load as a single mesh: {type(mesh).__name__}")
-    if not mesh.is_watertight:
-        log("warning: input mesh is not watertight; boolean ops may fail "
-            "or produce odd results")
+    mesh = _ensure_volume(mesh, log)
 
     origin, direction = resolve_axis(mesh, axis, axis_origin, axis_direction)
 
