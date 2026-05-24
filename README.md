@@ -83,6 +83,12 @@ be watertight (a warning is printed otherwise).
 
 ## Use
 
+**GUI mode** — run with no arguments (e.g. PyCharm's Run button, or just
+`python splitter.py`) and a Tkinter dialog opens with a file picker, axis
+selector, piece-count spinner, and pin-hole options.
+
+**CLI mode** — pass args:
+
 ```sh
 # 6 wedges around the mesh's Z axis through centroid, with 2 pin holes per joint
 python splitter.py model.stl -n 6 --pins

@@ -216,9 +216,231 @@ def resolve_axis(mesh: trimesh.Trimesh,
     return origin, direction
 
 
+def run_split(input_path: Path, pieces: int, axis: str,
+              axis_origin: np.ndarray | None,
+              axis_direction: np.ndarray | None,
+              pins: bool, pin_diameter: float, pin_depth: float, pin_count: int,
+              output_dir: Path | None, prefix: str | None,
+              fmt: str | None,
+              log=print) -> list[Path]:
+    """Shared implementation used by both CLI and GUI paths.
+
+    Returns the list of written file paths. Raises on failure.
+    """
+    if pieces < 2:
+        raise ValueError("pieces must be >= 2")
+    if not input_path.is_file():
+        raise FileNotFoundError(f"input file not found: {input_path}")
+
+    mesh = trimesh.load(input_path, force="mesh")
+    if not isinstance(mesh, trimesh.Trimesh):
+        raise TypeError(
+            f"input did not load as a single mesh: {type(mesh).__name__}")
+    if not mesh.is_watertight:
+        log("warning: input mesh is not watertight; boolean ops may fail "
+            "or produce odd results")
+
+    origin, direction = resolve_axis(mesh, axis, axis_origin, axis_direction)
+
+    def _fmt(v):
+        return "(" + ", ".join(f"{x:.3f}" for x in v) + ")"
+    log(f"splitting {input_path.name} into {pieces} wedges "
+        f"around axis origin={_fmt(origin)} dir={_fmt(direction)}")
+
+    piece_meshes = split_radial(
+        mesh,
+        n=pieces,
+        axis_origin=origin,
+        axis_direction=direction,
+        pin_diameter=(pin_diameter if pins else 0.0),
+        pin_depth=(pin_depth if pins else 0.0),
+        pin_count=(pin_count if pins else 0),
+    )
+
+    if not piece_meshes:
+        raise RuntimeError("no pieces produced")
+
+    out_dir = output_dir or input_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    name_prefix = prefix or f"{input_path.stem}_wedge"
+    ext = (fmt or input_path.suffix.lstrip(".") or "stl").lower()
+
+    written: list[Path] = []
+    for idx, piece in enumerate(piece_meshes, start=1):
+        out_path = out_dir / f"{name_prefix}_{idx:02d}.{ext}"
+        piece.export(out_path)
+        log(f"  wrote {out_path}  ({len(piece.vertices)} verts, "
+            f"{len(piece.faces)} faces)")
+        written.append(out_path)
+    return written
+
+
+# ---------------------------------------------------------------------------
+# GUI (tkinter, stdlib)
+# ---------------------------------------------------------------------------
+
+def run_gui() -> int:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+
+    root = tk.Tk()
+    root.title("FusionSplitter — Radial Wedge Splitter")
+    root.geometry("560x520")
+
+    pad = {"padx": 8, "pady": 4}
+
+    # --- Input file --------------------------------------------------------
+    input_var = tk.StringVar()
+    out_var = tk.StringVar()
+
+    def pick_input():
+        path = filedialog.askopenfilename(
+            title="Select mesh to split",
+            filetypes=[("Mesh files", "*.stl *.obj *.ply *.3mf"),
+                       ("All files", "*.*")])
+        if path:
+            input_var.set(path)
+            if not out_var.get():
+                out_var.set(str(Path(path).parent))
+
+    def pick_output():
+        path = filedialog.askdirectory(title="Select output directory")
+        if path:
+            out_var.set(path)
+
+    row = 0
+    ttk.Label(root, text="Input mesh:").grid(row=row, column=0, sticky="w", **pad)
+    ttk.Entry(root, textvariable=input_var, width=50).grid(
+        row=row, column=1, sticky="we", **pad)
+    ttk.Button(root, text="Browse…", command=pick_input).grid(
+        row=row, column=2, **pad)
+
+    row += 1
+    ttk.Label(root, text="Output dir:").grid(row=row, column=0, sticky="w", **pad)
+    ttk.Entry(root, textvariable=out_var, width=50).grid(
+        row=row, column=1, sticky="we", **pad)
+    ttk.Button(root, text="Browse…", command=pick_output).grid(
+        row=row, column=2, **pad)
+
+    # --- Core params -------------------------------------------------------
+    row += 1
+    ttk.Separator(root, orient="horizontal").grid(
+        row=row, column=0, columnspan=3, sticky="we", pady=8)
+
+    pieces_var = tk.IntVar(value=4)
+    axis_var = tk.StringVar(value="Z")
+
+    row += 1
+    ttk.Label(root, text="Number of pieces:").grid(
+        row=row, column=0, sticky="w", **pad)
+    ttk.Spinbox(root, from_=2, to=64, textvariable=pieces_var, width=8).grid(
+        row=row, column=1, sticky="w", **pad)
+
+    row += 1
+    ttk.Label(root, text="Center axis:").grid(row=row, column=0, sticky="w", **pad)
+    ttk.Combobox(root, values=["X", "Y", "Z"], textvariable=axis_var,
+                 width=6, state="readonly").grid(
+        row=row, column=1, sticky="w", **pad)
+    ttk.Label(root, text="(through mesh centroid)").grid(
+        row=row, column=2, sticky="w", **pad)
+
+    # --- Pin holes ---------------------------------------------------------
+    row += 1
+    ttk.Separator(root, orient="horizontal").grid(
+        row=row, column=0, columnspan=3, sticky="we", pady=8)
+
+    pins_var = tk.BooleanVar(value=True)
+    pin_dia_var = tk.DoubleVar(value=4.0)
+    pin_depth_var = tk.DoubleVar(value=10.0)
+    pin_count_var = tk.IntVar(value=2)
+
+    row += 1
+    ttk.Checkbutton(root, text="Add alignment pin holes",
+                    variable=pins_var).grid(
+        row=row, column=0, columnspan=2, sticky="w", **pad)
+
+    row += 1
+    ttk.Label(root, text="Pin diameter (mm):").grid(
+        row=row, column=0, sticky="w", **pad)
+    ttk.Entry(root, textvariable=pin_dia_var, width=10).grid(
+        row=row, column=1, sticky="w", **pad)
+
+    row += 1
+    ttk.Label(root, text="Pin depth each side (mm):").grid(
+        row=row, column=0, sticky="w", **pad)
+    ttk.Entry(root, textvariable=pin_depth_var, width=10).grid(
+        row=row, column=1, sticky="w", **pad)
+
+    row += 1
+    ttk.Label(root, text="Pins per joint:").grid(
+        row=row, column=0, sticky="w", **pad)
+    ttk.Spinbox(root, from_=1, to=10, textvariable=pin_count_var, width=8).grid(
+        row=row, column=1, sticky="w", **pad)
+
+    # --- Log + Split button -----------------------------------------------
+    row += 1
+    ttk.Separator(root, orient="horizontal").grid(
+        row=row, column=0, columnspan=3, sticky="we", pady=8)
+
+    row += 1
+    log_text = tk.Text(root, height=8, width=64, wrap="word")
+    log_text.grid(row=row, column=0, columnspan=3, sticky="we", **pad)
+
+    def log(msg: str):
+        log_text.insert("end", msg + "\n")
+        log_text.see("end")
+        root.update_idletasks()
+
+    def do_split():
+        try:
+            input_path = Path(input_var.get())
+            if not input_var.get():
+                messagebox.showerror("Missing input", "Please pick an input mesh.")
+                return
+            out_dir = Path(out_var.get()) if out_var.get() else None
+            log_text.delete("1.0", "end")
+            written = run_split(
+                input_path=input_path,
+                pieces=pieces_var.get(),
+                axis=axis_var.get(),
+                axis_origin=None,
+                axis_direction=None,
+                pins=pins_var.get(),
+                pin_diameter=pin_dia_var.get(),
+                pin_depth=pin_depth_var.get(),
+                pin_count=pin_count_var.get(),
+                output_dir=out_dir,
+                prefix=None,
+                fmt=None,
+                log=log,
+            )
+            messagebox.showinfo("Done", f"Wrote {len(written)} piece(s) to:\n"
+                                        f"{written[0].parent}")
+        except Exception as exc:
+            log(f"ERROR: {exc}")
+            messagebox.showerror("Split failed", str(exc))
+
+    row += 1
+    ttk.Button(root, text="Split", command=do_split).grid(
+        row=row, column=0, columnspan=3, pady=12)
+
+    root.columnconfigure(1, weight=1)
+    root.mainloop()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# CLI entry
+# ---------------------------------------------------------------------------
+
 def main(argv: list[str] | None = None) -> int:
+    # Launch GUI if no args were passed (e.g. running from PyCharm Run button).
+    if argv is None and len(sys.argv) == 1:
+        return run_gui()
+
     p = argparse.ArgumentParser(
-        description="Split a mesh into N equal radial wedges around a central axis.")
+        description="Split a mesh into N equal radial wedges around a central axis. "
+                    "Run with no arguments to open the GUI.")
     p.add_argument("input", type=Path, help="Input mesh file (STL/OBJ/PLY/3MF).")
     p.add_argument("-n", "--pieces", type=int, required=True,
                    help="Number of wedge pieces (>= 2).")
@@ -248,52 +470,24 @@ def main(argv: list[str] | None = None) -> int:
                         "(default: same as input).")
     args = p.parse_args(argv)
 
-    if args.pieces < 2:
-        p.error("--pieces must be >= 2")
-
-    if not args.input.is_file():
-        p.error(f"input file not found: {args.input}")
-
-    mesh = trimesh.load(args.input, force="mesh")
-    if not isinstance(mesh, trimesh.Trimesh):
-        p.error(f"input did not load as a single mesh: {type(mesh).__name__}")
-    if not mesh.is_watertight:
-        print("warning: input mesh is not watertight; boolean ops may fail "
-              "or produce odd results", file=sys.stderr)
-
-    origin, direction = resolve_axis(
-        mesh, args.axis, args.axis_origin, args.axis_direction)
-
-    def _fmt(v):
-        return "(" + ", ".join(f"{x:.3f}" for x in v) + ")"
-    print(f"splitting {args.input.name} into {args.pieces} wedges "
-          f"around axis origin={_fmt(origin)} dir={_fmt(direction)}")
-
-    pieces = split_radial(
-        mesh,
-        n=args.pieces,
-        axis_origin=origin,
-        axis_direction=direction,
-        pin_diameter=(args.pin_diameter if args.pins else 0.0),
-        pin_depth=(args.pin_depth if args.pins else 0.0),
-        pin_count=(args.pin_count if args.pins else 0),
-    )
-
-    if not pieces:
-        print("error: no pieces produced", file=sys.stderr)
+    try:
+        run_split(
+            input_path=args.input,
+            pieces=args.pieces,
+            axis=args.axis,
+            axis_origin=args.axis_origin,
+            axis_direction=args.axis_direction,
+            pins=args.pins,
+            pin_diameter=args.pin_diameter,
+            pin_depth=args.pin_depth,
+            pin_count=args.pin_count,
+            output_dir=args.output_dir,
+            prefix=args.prefix,
+            fmt=args.format,
+        )
+    except (ValueError, FileNotFoundError, TypeError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    out_dir = args.output_dir or args.input.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    prefix = args.prefix or f"{args.input.stem}_wedge"
-    ext = (args.format or args.input.suffix.lstrip(".") or "stl").lower()
-
-    for idx, piece in enumerate(pieces, start=1):
-        out_path = out_dir / f"{prefix}_{idx:02d}.{ext}"
-        piece.export(out_path)
-        print(f"  wrote {out_path}  ({len(piece.vertices)} verts, "
-              f"{len(piece.faces)} faces)")
-
     return 0
 
 
